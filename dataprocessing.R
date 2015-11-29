@@ -5,6 +5,8 @@ library(rpart)
 library(rpart.plot)
 library(rpart.utils)
 library(randomForest)
+require("spatial.tools")
+
 
 
 path <- "/home/noah/Desktop/Data From Chuck/From Dragon"
@@ -51,6 +53,7 @@ createMasterRaster <- function(folderPath,maxFiles,rasterName="rasterized_",list
   }
   # rasterize
   masterRaster <- rasterize(pts,rast,fun=mean)
+  countRaster <- rasterize(pts,rast,fun='count')
   layerNames <- names(masterRaster)
 
   # loop through all files except the first now, up to the limit
@@ -80,11 +83,16 @@ createMasterRaster <- function(folderPath,maxFiles,rasterName="rasterized_",list
       }
       newRast <- rasterize(pts,rast,fun=mean)
       masterRaster <- mosaic(masterRaster,newRast,fun=mean)
+      newCountRaster <- rasterize(pts,rast,fun='count')
+      countRaster <- mosaic(countRaster,newCountRaster,fun=sum)
       names(masterRaster) <- layerNames
       filesCount <- filesCount + 1
       if (filesCount >= maxFiles)
       {
-        return(masterRaster)
+        toReturn <- list()
+        toReturn[["masterRaster"]] <- masterRaster
+        toReturn[["countRaster"]] <- countRaster
+        return(toReturn)
       }
     }
   }
@@ -95,7 +103,10 @@ createMasterRaster <- function(folderPath,maxFiles,rasterName="rasterized_",list
 #     rast <- masterRaster[[layerName]]
 #     writeRaster(rast,paste(layerName,".tif",sep = ""))
 #   }
-  return(masterRaster)
+  toReturn <- list()
+  toReturn[["masterRaster"]] <- masterRaster
+  toReturn[["countRaster"]] <- countRaster
+  return(toReturn)
 } 
 
 createRasters <- function()
@@ -103,12 +114,50 @@ createRasters <- function()
   householdsPath <- "/home/noah/Desktop/Data From Chuck/From Dragon"
   individualsPath <- "/home/noah/Desktop/Data From Chuck/From Dragon/Raw"
   
-  householdsMasterRaster <- createMasterRaster(householdsPath,10000,rasterName = "households_")
+  toReturn <- createMasterRaster(householdsPath,10,rasterName = "households_")
+  householdsMasterRaster <- toReturn[["masterRaster"]]
+  householdsMasterRaster <- createFocalRasters(householdsMasterRaster)
+  householdsCountRaster <- toReturn[["countRaster"]]
   writeRaster(householdsMasterRaster,"households",format="GTiff",bylayer=TRUE,suffix="names")
+  writeRaster(householdsCountRaster,"householdsCounts",format="GTiff",bylayer=TRUE,suffix="names")
   
-  individualsMasterRaster <- createMasterRaster(individualsPath,10000,rasterName = "individuals_")
+  toReturn <- createMasterRaster(individualsPath,10,rasterName = "individuals_")
+  individualsMasterRaster <- toReturn[["masterRaster"]]
+  individualsMasterRaster <- createFocalRasters(individualsMasterRaster)
+  individualsCountRaster <- toReturn[["countRaster"]]
   writeRaster(individualsMasterRaster,"individuals",format="GTiff",bylayer=TRUE,suffix="names")
+  writeRaster(individualsCountRaster,"individualsCounts",format="GTiff",bylayer=TRUE,suffix="names")
   
+  toReturn <- list()
+  toReturn[["householdsMasterRaster"]] <- householdsMasterRaster
+  toReturn[["householdsCountRaster"]] <- householdsCountRaster
+  toReturn[["individualsMasterRaster"]] <- individualsMasterRaster
+  toReturn[["individualsCountRaster"]] <- individualsCountRaster
+  
+  return(toReturn)
+}
+
+createFocalRasters <- function(masterRaster)
+{
+  # create the focal rastesr and add to the masterRaster
+  for (name in names(masterRaster))
+  {
+    rasterLayer <- masterRaster[[name]]
+    w <- matrix(rep(1,9),ncol=3,nrow=3)
+    
+    meanName <- paste(name,"_mean",sep="")
+    meanFocal <- focal(rasterLayer,w,fun=mean,na.rm=TRUE,pad=TRUE,padvalue=NA)
+    masterRaster[[meanName]] <- meanFocal
+    
+    minName <- paste(name,"_min",sep="")
+    minFocal <- focal(rasterLayer,w,fun=min,na.rm=TRUE,pad=TRUE,padvalue=NA)
+    masterRaster[[minName]] <- minFocal
+    
+    maxName <- paste(name,"_max",sep="")
+    maxFocal <- focal(rasterLayer,w,fun=max,na.rm=TRUE,pad=TRUE,padvalue=NA)
+    masterRaster[[maxName]] <- maxFocal
+  }
+  return(masterRaster)
 }
 
 createRegressionTree <- function()
@@ -123,8 +172,8 @@ createRegressionTree <- function()
   compareRaster(dfToRast,householdsMasterRaster)
   
   # create the regression
-  formula = PERSONS ~ .
-  fit <- rpart(formula,method="class",df) # remove method, replace with anova
+  formula = households_PERSONS ~ .
+  fit <- rpart(formula,df) # remove method, replace with anova
   rpart.plot(fit)  
   
   # test the data
@@ -142,10 +191,64 @@ createRegressionTree <- function()
   
   
   # random forest version  
-  rfmod <- randomForest(PERSONS ~URBAN+OWNRSHP+NFAMS, data=df)
+  rfmod <- randomForest(households_PERSONS ~households_URBAN+households_OWNRSHP+households_NFAMS, data=df)
   r_randomforest <- predict(householdsMasterRaster,rfmod, type='response', progress='window')
 }
 
+testRasterCalc <- function(fit,masterRaster)
+{
+  calc_function <- function(c)
+  {
+    # print(c)
+    if (is.data.frame(c))
+    {
+      # c_prediction <- predict(fit,c, na.exclude(c))
+      c_prediction <- predict(fit,c)
+      
+      print(c_prediction)
+      return(c_prediction)
+    }
+  }
+  
+  prediction_raster <- calc(masterRaster,calc_function)
+  
+}
+
+predfun <- function(model,data)
+{
+  print(data)
+  prediction <- predict(model,data,type="vector")
+  print(prediction)
+  return(prediction)	
+}
+
+prediction_raster <- calc(masterRaster,fit,fun=predfun)
+
+predCell <- function(fit,cell)
+{
+  print(cell)
+  prediction <- predict(fit,cell,type="vector")
+  return(prediction)
+}
+
+prediction_raster <- calc(masterRaster,fun=predCell)
+
+doPred <- function(x)
+{
+  print(x)
+  prediction <- predict(fit,x)
+  return(prediction)
+}
+
+pred <- calc(masterRaster,doPred)
+
+horrible <- function()
+{
+  studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/Dhaka_Data/smaller_sa/w001001.adf"
+  emptyRaster <- raster(studyExtentRasterPath)
+  df <- as.data.frame(masterRaster,xy=TRUE)
+  
+}
 
 convertCategoricalVariablesToBoolean <- function(df,colName,listOfCategories)
 {
@@ -302,6 +405,49 @@ categoricalList[["BD11A_ELECTRC"]] <- list()
 
 
 
+recreateMasterRaster <- function(dataset="households",folder="/home/noah/Desktop/Upload to Drive")
+{
+  setwd(folder)
+  
+  filePattern <- paste(dataset,"_",".*","tif",sep="")
+  filePaths <- list.files(pattern = filePattern)
+  rasters <- c()
+  
+  for (fileName in filePaths)
+  {
+    if (!grepl("aux",fileName))
+    {
+      rast <- raster(fileName)
+      rasters <- c(rasters,rast)
+    }
+  }
+  masterRaster <- stack(rasters)
+  
+  return(masterRaster)
+}
 
-
-
+clairesWinningIdea <- function(masterRaster)
+{
+  studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/Dhaka_Data/smaller_sa/w001001.adf"
+  emptyRaster <- raster(studyExtentRasterPath)
+  ncells <- dim(masterRaster)[1] * dim(masterRaster)[2]
+  xs <- c()
+  ys <- c()
+  preds <- c()
+  for (i in 1:ncells)
+  {
+    df <- as.data.frame(masterRaster[i])
+    coord <- coordinates(masterRaster)[i,]
+    x <- coord[1]
+    xs <- c(xs,x)
+    y <- coord[2]
+    ys <- c(ys,y)
+    pred <- predict(fit,df)
+    preds <- c(preds,pred)
+  }
+  spdf <- data.frame(x=xs,y=ys,pred=preds)
+  coordinates(spdf)=~x+y
+  predictionRaster <- rasterize(spdf,emptyRaster,fun=mean)
+  predictionRaster <- predictionRaster[["pred"]]
+  
+}
