@@ -114,19 +114,24 @@ createRasters <- function()
   householdsPath <- "/home/noah/Desktop/Data From Chuck/From Dragon"
   individualsPath <- "/home/noah/Desktop/Data From Chuck/From Dragon/Raw"
   
-  toReturn <- createMasterRaster(householdsPath,10,rasterName = "households_")
+  toReturn <- createMasterRaster(householdsPath,10000,rasterName = "households_")
   householdsMasterRaster <- toReturn[["masterRaster"]]
   householdsMasterRaster <- createFocalRasters(householdsMasterRaster)
   householdsCountRaster <- toReturn[["countRaster"]]
-  writeRaster(householdsMasterRaster,"households",format="GTiff",bylayer=TRUE,suffix="names")
-  writeRaster(householdsCountRaster,"householdsCounts",format="GTiff",bylayer=TRUE,suffix="names")
+  writeRaster(householdsMasterRaster,"households",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
+  writeRaster(householdsCountRaster,"householdsCounts",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
+  writeRaster(householdsMasterRaster,filename="householdsMasterRaster.grd",bandorder="BIL",overwrite=TRUE)
+  writeRaster(householdsCountRaster,filename="householdsCounts.grd",bandorder="BIL",overwrite=TRUE)
   
-  toReturn <- createMasterRaster(individualsPath,10,rasterName = "individuals_")
+  
+  toReturn <- createMasterRaster(individualsPath,10000,rasterName = "individuals_")
   individualsMasterRaster <- toReturn[["masterRaster"]]
   individualsMasterRaster <- createFocalRasters(individualsMasterRaster)
   individualsCountRaster <- toReturn[["countRaster"]]
-  writeRaster(individualsMasterRaster,"individuals",format="GTiff",bylayer=TRUE,suffix="names")
-  writeRaster(individualsCountRaster,"individualsCounts",format="GTiff",bylayer=TRUE,suffix="names")
+  writeRaster(individualsMasterRaster,"individuals",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
+  writeRaster(individualsCountRaster,"individualsCounts",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
+  writeRaster(individualsMasterRaster,filename="individualsMasterRaster.grd",bandorder="BIL",overwrite=TRUE)
+  writeRaster(individualsCountRaster,filename="individualsCounts.grd",bandorder="BIL",overwrite=TRUE)
   
   toReturn <- list()
   toReturn[["householdsMasterRaster"]] <- householdsMasterRaster
@@ -426,7 +431,7 @@ recreateMasterRaster <- function(dataset="households",folder="/home/noah/Desktop
   return(masterRaster)
 }
 
-clairesWinningIdea <- function(masterRaster)
+clairesWinningIdea <- function(masterRaster,fit)
 {
   studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/Dhaka_Data/smaller_sa/w001001.adf"
   emptyRaster <- raster(studyExtentRasterPath)
@@ -443,11 +448,72 @@ clairesWinningIdea <- function(masterRaster)
     y <- coord[2]
     ys <- c(ys,y)
     pred <- predict(fit,df)
-    preds <- c(preds,pred)
+    delta <- 0.5
+    predRandomized <- runif(1,pred-delta,pred+delta)
+    preds <- c(preds,predRandomized)
   }
   spdf <- data.frame(x=xs,y=ys,pred=preds)
   coordinates(spdf)=~x+y
   predictionRaster <- rasterize(spdf,emptyRaster,fun=mean)
   predictionRaster <- predictionRaster[["pred"]]
+  return(predictionRaster)
+}
+
+doSimulation <- function(masterRaster,growthFit,elecFit,nYears,annualPercentGrowth=0.012)
+{
+  growthLayer <- "growth"
+  elecLayer <- "elec"
+  growthEstimates_Yearly <- c()
+  elecEstimates_Yearly <- c()
   
+  for (year in 1:nYears)
+  {
+    # 1. Growth Estimate
+    growthEstimate <- clairesWinningIdea(masterRaster,growthFit)
+    growthEstimateSum <- cellStats(growthEstimate,sum)
+    growthEstimate_Standardized <- growthEstimate / growthEstimateSum
+    growthEstimate_Population = growthEstimate_Standardized * annualPercentGrowth + 1
+    growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster[[growthLayer]]
+    masterRaster[[growthLayer]] <- growthEstimate_NewPopulation
+    
+    # 2. Electricity Estimate
+    elecEstimate <- clairesWinningIdea(masterRaster,elecFit)
+    masterRaster[[elecLayer]] <- elecEstimate
+    
+    # 3. Save each year's results so we can make a slide show
+    growthEstimates_Yearly <- c(growthEstimates_Yearly,growthEstimate_NewPopulation)
+    elecEstimates_Yearly <- c(elecEstimates_Yearly,elecEstimate)
+  }
+  growthEstimates_Yearly_Brick <- brick(growthEstimates_Yearly)
+  elecEstimates_Yearly_Brick <- brick(elecEstimates_Yearly)
+  toReturn <- list()
+  toReturn[["masterRaster"]] <- masterRaster
+  toReturn[["growthEstimates_Yearly_Brick"]] <- growthEstimates_Yearly_Brick
+  toReturn[["elecEstimates_Yearly_Brick"]] <- elecEstimates_Yearly_Brick
+  return(toReturn)
+}
+
+monteCarlo <- function(masterRaster,growthFit,elecFit,nYears,annualPercentGrowth=0.012,nSimulations=1000)
+{
+  growthLayer <- "growth"
+  elecLayer <- "elec"
+  growthEstimates_Simulation_Final <- list()
+  elecEstimates_Simulation_Final <- list()
+  for (sim in 1:nSimulations-1)
+  {
+    toReturn <- doSimulation(masterRaster,growthFit,elecFit,nYears,annualPercentGrowth)
+    growthEstimate <- toReturn[["masterRaster"]][[growthLayer]]
+    elecEstimate <- toReturn[["masterRaster"]][[elecLayer]]
+    growthEstimates_Simulation_Final[[sim]] <- growthEstimate
+    elecEstimates_Simulation_Final[[sim]] <- elecEstimate
+  }
+  toReturn <- list()
+  toReturn[["growth"]] <- growthEstimates_Simulation_Final # may want to save instead
+  toReturn[["elec"]] <- elecEstimates_Simulation_Final # may want to save instead
+  return(toReturn)
+}
+  
+applyDistributionToRaster <- function(raster,distribution,distParameters)
+{
+  return(NULL)
 }
