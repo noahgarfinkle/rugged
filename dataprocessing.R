@@ -15,6 +15,8 @@ setwd(path)
 studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/Dhaka_Data/smaller_sa/w001001.adf"
 studyExtentRaster <- raster(studyExtentRasterPath)
 
+largeExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/sa_200m/w001001x.adf"
+
 # define the data files we're going to read
 landCoverPath <- "/home/noah/Desktop/NRES 565 Data/Land Cover/LC_Output/C20151.tif"
 landCoverRaster <- raster(landCoverPath)
@@ -29,19 +31,22 @@ createMasterRaster <- function(folderPath,maxFiles,rasterName="rasterized_",list
   setwd(folderPath)
   
   # set the extents
-  studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/Dhaka_Data/smaller_sa/w001001.adf"
-  studyExtentRaster <- raster(studyExtentRasterPath)
-  ext <- extent(studyExtentRaster)
+  #studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/Dhaka_Data/smaller_sa/w001001.adf"
+  studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/sa_200m/w001001x.adf"
+#   studyExtentRaster <- raster(studyExtentRasterPath)
+  rast <- raster(studyExtentRasterPath)
+  # ext <- extent(studyExtentRaster)
   
   # process the first file, because it is the only one with a header
   fileName <- "xaa"
   pts <- read.csv(fileName,header=TRUE)
   header <- colnames(pts)
   coordinates(pts)=~x+y
-  rast<-raster()
-  extent(rast) <- ext
-  ncol(rast) <- 13
-  nrow(rast) <- 12
+#   rast<-raster()
+#   extent(rast) <- ext
+#    ncol(rast) <- 13
+#    nrow(rast) <- 12
+  res(rast) <- c(800,800)
   # add new columns for the categorical variables
   for (colname in header)
   {
@@ -68,10 +73,12 @@ createMasterRaster <- function(folderPath,maxFiles,rasterName="rasterized_",list
       pts <- read.csv(fileName,header=FALSE)
       colnames(pts) <- header
       coordinates(pts)=~x+y
-      rast<-raster()
-      extent(rast) <- ext
-      ncol(rast) <- 13
-      nrow(rast) <- 12
+#       rast<-raster()
+#       extent(rast) <- ext
+#       ncol(rast) <- 13
+#       nrow(rast) <- 12
+      res(rast) <- c(800,800)
+      
       # add new columns for the categorical variables
       for (colname in header)
       {
@@ -117,7 +124,9 @@ createRasters <- function()
   toReturn <- createMasterRaster(householdsPath,10000,rasterName = "households_")
   householdsMasterRaster <- toReturn[["masterRaster"]]
   householdsMasterRaster <- createFocalRasters(householdsMasterRaster)
-  householdsCountRaster <- toReturn[["countRaster"]]
+  householdsCountRaster <- toReturn[["countRaster"]][[1]]
+  
+  setwd("/home/noah/Desktop/NRES 565 Final Run/Results")
   writeRaster(householdsMasterRaster,"households",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
   writeRaster(householdsCountRaster,"householdsCounts",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
   writeRaster(householdsMasterRaster,filename="householdsMasterRaster.grd",bandorder="BIL",overwrite=TRUE)
@@ -127,7 +136,9 @@ createRasters <- function()
   toReturn <- createMasterRaster(individualsPath,10000,rasterName = "individuals_")
   individualsMasterRaster <- toReturn[["masterRaster"]]
   individualsMasterRaster <- createFocalRasters(individualsMasterRaster)
-  individualsCountRaster <- toReturn[["countRaster"]]
+  individualsCountRaster <- toReturn[["countRaster"]][[1]]
+  
+  setwd("/home/noah/Desktop/NRES 565 Final Run/Results")
   writeRaster(individualsMasterRaster,"individuals",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
   writeRaster(individualsCountRaster,"individualsCounts",format="GTiff",bylayer=TRUE,suffix="names",overwrite=TRUE)
   writeRaster(individualsMasterRaster,filename="individualsMasterRaster.grd",bandorder="BIL",overwrite=TRUE)
@@ -219,6 +230,8 @@ testRasterCalc <- function(fit,masterRaster)
   
 }
 
+oldCalcFailures <- function()
+{
 predfun <- function(model,data)
 {
   print(data)
@@ -253,6 +266,7 @@ horrible <- function()
   emptyRaster <- raster(studyExtentRasterPath)
   df <- as.data.frame(masterRaster,xy=TRUE)
   
+}
 }
 
 convertCategoricalVariablesToBoolean <- function(df,colName,listOfCategories)
@@ -410,6 +424,7 @@ categoricalList[["BD11A_ELECTRC"]] <- list()
 
 
 
+
 recreateMasterRaster <- function(dataset="households",folder="/home/noah/Desktop/Upload to Drive")
 {
   setwd(folder)
@@ -516,4 +531,53 @@ monteCarlo <- function(masterRaster,growthFit,elecFit,nYears,annualPercentGrowth
 applyDistributionToRaster <- function(raster,distribution,distParameters)
 {
   return(NULL)
+}
+
+getAllRasterNames <- function()
+{
+  householdsPath <- "/home/noah/Desktop/Data From Chuck/From Dragon"
+  individualsPath <- "/home/noah/Desktop/Data From Chuck/From Dragon/Raw"
+  
+  toReturn <- createMasterRaster(householdsPath,1,rasterName = "households_")
+  householdsMasterRaster <- toReturn[["masterRaster"]]
+  householdsMasterRaster <- createFocalRasters(householdsMasterRaster)
+  householdsCountRaster <- toReturn[["countRaster"]][[1]]
+  names(householdsCountRaster) <- c("households_density")
+  
+  householdsCombinedRaster <- brick(c(householdsMasterRaster,householdsCountRaster))
+  householdNames <- names(householdsCombinedRaster)
+
+  toReturn <- createMasterRaster(individualsPath,1,rasterName = "individuals_")
+  individualsMasterRaster <- toReturn[["masterRaster"]]
+  individualsMasterRaster <- createFocalRasters(individualsMasterRaster)
+  individualsCountRaster <- toReturn[["countRaster"]][[1]]
+  names(individualsCountRaster) <- c("individuals_density")
+  
+  individualsCombinedRaster <- brick(c(individualsMasterRaster,individualsCountRaster))
+  individualNames <- names(individualsCombinedRaster)
+  
+  combinedMasterRaster <- brick(c(householdsMasterRaster,individualsMasterRaster,householdsCountRaster,individualsCountRaster))
+
+  columnNames <- names(combinedMasterRaster)
+  setwd("/home/noah/Desktop/NRES 565 Final Run")
+  write(columnNames,file="allFileNames.txt")
+  write(householdNames,file="householdColumns.txt")
+  write(individualNames,file="individualColumns.txt")
+  
+  
+  return(toReturn)
+}
+
+readVariableNamesAndSubsetMasterRaster <- function(householdMasterRaster,individualMasterRaster)
+{
+  setwd("/home/noah/Desktop/NRES 565 Final Run")
+  
+  households <- scan("householdColumnsToKeep.txt", what="", sep="\n") # courtesy http://stackoverflow.com/questions/6602881/text-file-to-list-in-r
+  individuals <- scan("individualColumsToKeep.txt", what="", sep="\n")
+  
+  householdsSubset <- householdMasterRaster[[households]]
+  individualsSubset <- individualMasterRaster[[individuals]]
+  
+  masterRaster <- brick(c(householdsSubset,individualsSubset))
+  return(masterRaster)
 }
