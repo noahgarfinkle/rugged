@@ -650,6 +650,7 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
     
     # 3. Save each year's results so we can make a slide show
     growthEstimates_Yearly_tree <- c(growthEstimates_Yearly_tree,growthEstimate_NewPopulation)
+    # TODO: calculate percent growth
     elecEstimates_Yearly_tree <- c(elecEstimates_Yearly_tree,elecEstimate)
     
 #     # B. LM version
@@ -681,3 +682,12 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
 #   runResults[["elecEstimates_Yearly_Brick_lm"]] <- elecEstimates_Yearly_Brick_lm
   return(runResults)
 }
+
+# TODO:
+# 1. pare down the number of variables a bit
+# 2. currently, we're only regressing (changing) population and electrc
+# Proposal: what if regress every variable against every other variable,
+# and thus update everything each run
+# 3. Plan: 1) run the full model, updating only 2 variables
+#          2) run a small subset of variables (10-20 vars), but regress and update them all
+# 4. make sure to omit NA's from df before running lm
