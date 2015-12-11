@@ -448,8 +448,9 @@ recreateMasterRaster <- function(dataset="households",folder="/home/noah/Desktop
 
 clairesWinningIdea <- function(masterRaster,fit)
 {
-  studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/Dhaka_Data/smaller_sa/w001001.adf"
+  studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/sa_200m/w001001x.adf"
   emptyRaster <- raster(studyExtentRasterPath)
+  res(emptyRaster) <- c(800,800)
   ncells <- dim(masterRaster)[1] * dim(masterRaster)[2]
   xs <- c()
   ys <- c()
@@ -580,4 +581,103 @@ readVariableNamesAndSubsetMasterRaster <- function(householdMasterRaster,individ
   
   masterRaster <- brick(c(householdsSubset,individualsSubset))
   return(masterRaster)
+}
+
+alignRasters <- function(rast,ext)
+{
+  
+  returnRaster <- resample(rast,ext,method="ngb")
+  
+  
+  returnRaster <- extend(rast, ext, value=NA)
+  return(returnRaster)
+}
+
+convertToReturnToMasterRaster <- function(toReturn)
+{
+  households <- toReturn$householdsMasterRaster
+  householdsCounts <- toReturn$householdsCountRaster
+  individuals <- toReturn$individualsMasterRaster
+  individualsCounts <- toReturn$individualsCountRaster
+  populationLayerSum <- cellStats(individualsCounts,sum)
+  populationLayer <- individualsCounts / populationLayerSum
+  names(populationLayer) <- c("growth")
+  masterRaster <- brick(c(households,individuals,populationLayer))
+  return(masterRaster)
+}
+
+
+run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
+{
+  growthLayer <- "growth"
+  elecLayer <- "ELECTRC_Yes"  
+  growthEstimates_Yearly_tree <- c()
+  elecEstimates_Yearly_tree <- c()
+  growthEstimates_Yearly_lm <- c()
+  elecEstimates_Yearly_lm <- c()
+  
+  # build the fits
+  df <- as.data.frame(masterRaster,xy=TRUE)
+  
+  # growth
+  formula_growth <- paste(growthLayer,"~.",sep="")
+  fit_growth_tree <- rpart(formula_growth,df)
+  # fit_growth_lm <- lm(formula_growth,df,na.action = na.exclude)
+  
+  # electric
+  formula_elec <- paste(elecLayer,"~.",sep="")
+  fit_elec_tree <- rpart(formula_elec,df)
+  # fit_elec_lm <- lm(formula_elec,df)
+  
+  # create seperate copies of the master raster for the analyses
+  masterRaster_tree <- masterRaster
+  masterRaster_lm <- masterRaster
+  
+  for (year in 1:nYears)
+  {
+    # A. Tree Version
+    # 1. Growth Estimate
+    growthEstimate <- clairesWinningIdea(masterRaster_tree,fit_growth_tree)
+    growthEstimateSum <- cellStats(growthEstimate,sum)
+    growthEstimate_Standardized <- growthEstimate / growthEstimateSum
+    growthEstimate_Population = growthEstimate_Standardized * annualPercentGrowth + 1
+    growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster_tree[[growthLayer]]
+    masterRaster_tree[[growthLayer]] <- growthEstimate_NewPopulation
+    
+    # 2. Electricity Estimate
+    elecEstimate <- clairesWinningIdea(masterRaster_tree,fit_elec_tree)
+    masterRaster_tree[[elecLayer]] <- elecEstimate
+    
+    # 3. Save each year's results so we can make a slide show
+    growthEstimates_Yearly_tree <- c(growthEstimates_Yearly_tree,growthEstimate_NewPopulation)
+    elecEstimates_Yearly_tree <- c(elecEstimates_Yearly_tree,elecEstimate)
+    
+#     # B. LM version
+#     # 1. Growth Estimate
+#     growthEstimate <- clairesWinningIdea(masterRaster_lm,fit_growth_lm)
+#     growthEstimateSum <- cellStats(growthEstimate,sum)
+#     growthEstimate_Standardized <- growthEstimate / growthEstimateSum
+#     growthEstimate_Population = growthEstimate_Standardized * annualPercentGrowth + 1
+#     growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster_lm[[growthLayer]]
+#     masterRaster_lm[[growthLayer]] <- growthEstimate_NewPopulation
+#     
+#     # 2. Electricity Estimate
+#     elecEstimate <- clairesWinningIdea(masterRaster_lm,fit_elec_lm)
+#     masterRaster_lm[[elecLayer]] <- elecEstimate
+#     
+#     # 3. Save each year's results so we can make a slide show
+#     growthEstimates_Yearly_lm <- c(growthEstimates_Yearly_lm,growthEstimate_NewPopulation)
+#     elecEstimates_Yearly_lm <- c(elecEstimates_Yearly_lm,elecEstimate)
+  }
+  growthEstimates_Yearly_Brick_tree <- brick(growthEstimates_Yearly_tree)
+  elecEstimates_Yearly_Brick_tree <- brick(elecEstimates_Yearly_tree)
+#   growthEstimates_Yearly_Brick_lm <- brick(growthEstimates_Yearly_lm)
+#   elecEstimates_Yearly_Brick_lm <- brick(elecEstimates_Yearly_lm)
+  runResults <- list()
+  runResults[["masterRaster"]] <- masterRaster
+  runResults[["growthEstimates_Yearly_Brick_tree"]] <- growthEstimates_Yearly_Brick_tree
+  runResults[["elecEstimates_Yearly_Brick_tree"]] <- elecEstimates_Yearly_Brick_tree
+#   runResults[["growthEstimates_Yearly_Brick_lm"]] <- growthEstimates_Yearly_Brick_lm
+#   runResults[["elecEstimates_Yearly_Brick_lm"]] <- elecEstimates_Yearly_Brick_lm
+  return(runResults)
 }
