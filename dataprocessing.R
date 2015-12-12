@@ -5,6 +5,7 @@ library(rpart)
 library(rpart.plot)
 library(rpart.utils)
 library(randomForest)
+library("doParallel")
 require("spatial.tools")
 
 
@@ -455,6 +456,7 @@ clairesWinningIdea <- function(masterRaster,fit)
   xs <- c()
   ys <- c()
   preds <- c()
+  locs <- 1:ncells
   for (i in 1:ncells)
   {
     df <- as.data.frame(masterRaster[i])
@@ -600,9 +602,11 @@ convertToReturnToMasterRaster <- function(toReturn)
   individuals <- toReturn$individualsMasterRaster
   individualsCounts <- toReturn$individualsCountRaster
   populationLayerSum <- cellStats(individualsCounts,sum)
-  populationLayer <- individualsCounts / populationLayerSum
-  names(populationLayer) <- c("growth")
-  masterRaster <- brick(c(households,individuals,populationLayer))
+  attractivenessLayer <- individualsCounts / populationLayerSum
+  names(attractivenessLayer) <- c("growth")
+  populationLayer <- individualsCounts
+  names(populationLayer) <- c("population")
+  masterRaster <- brick(c(households,individuals,attractivenessLayer,populationLayer))
   return(masterRaster)
 }
 
@@ -611,10 +615,12 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
 {
   growthLayer <- "growth"
   elecLayer <- "ELECTRC_Yes"  
+  populationLayer <- "population"
   growthEstimates_Yearly_tree <- c()
   elecEstimates_Yearly_tree <- c()
   growthEstimates_Yearly_lm <- c()
   elecEstimates_Yearly_lm <- c()
+  populationEstimates_Yearly_tree <- c()
   
   # build the fits
   df <- as.data.frame(masterRaster,xy=TRUE)
@@ -625,7 +631,8 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   # fit_growth_lm <- lm(formula_growth,df,na.action = na.exclude)
   
   # electric
-  formula_elec <- paste(elecLayer,"~.",sep="")
+  # formula_elec <- paste(elecLayer,"~.",sep="")
+  formula_elec <- paste(elecLayer,"~",growthLayer,"+ URBAN_Urban + OWNRSHP_Owned + EMPSTAT_Employed_mean + EMPSTAT_Employed_min + EMPSTAT_Employed_max",sep="")
   fit_elec_tree <- rpart(formula_elec,df)
   # fit_elec_lm <- lm(formula_elec,df)
   
@@ -635,17 +642,21 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   
   for (year in 1:nYears)
   {
+    statusLine <- paste("Year: ",year,sep="")
+    print(statusLine)
     # A. Tree Version
     # 1. Growth Estimate
-    growthEstimate <- clairesWinningIdea(masterRaster_tree,fit_growth_tree)
+    growthEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_tree,fit_growth_tree)
     growthEstimateSum <- cellStats(growthEstimate,sum)
     growthEstimate_Standardized <- growthEstimate / growthEstimateSum
     growthEstimate_Population = growthEstimate_Standardized * annualPercentGrowth + 1
-    growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster_tree[[growthLayer]]
-    masterRaster_tree[[growthLayer]] <- growthEstimate_NewPopulation
+    growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster_tree[[populationLayer]]
+    masterRaster_tree[[populationLayer]] <- growthEstimate_NewPopulation
+    populationEstimate_Yearly_tree <- cellStats(masterRaster_tree[[populationLayer]],sum)
+    populationEstimates_Yearly_tree <- c(populationEstimates_Yearly_tree,populationEstimate_Yearly_tree)
     
     # 2. Electricity Estimate
-    elecEstimate <- clairesWinningIdea(masterRaster_tree,fit_elec_tree)
+    elecEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_tree,fit_elec_tree)
     masterRaster_tree[[elecLayer]] <- elecEstimate
     
     # 3. Save each year's results so we can make a slide show
@@ -675,6 +686,8 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
 #   growthEstimates_Yearly_Brick_lm <- brick(growthEstimates_Yearly_lm)
 #   elecEstimates_Yearly_Brick_lm <- brick(elecEstimates_Yearly_lm)
   runResults <- list()
+  runResults[["fit_growth_tree"]] <- fit_growth_tree
+  runResults[["fit_elec_tree"]] <- fit_elec_tree
   runResults[["masterRaster"]] <- masterRaster
   runResults[["growthEstimates_Yearly_Brick_tree"]] <- growthEstimates_Yearly_Brick_tree
   runResults[["elecEstimates_Yearly_Brick_tree"]] <- elecEstimates_Yearly_Brick_tree
@@ -691,3 +704,52 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
 # 3. Plan: 1) run the full model, updating only 2 variables
 #          2) run a small subset of variables (10-20 vars), but regress and update them all
 # 4. make sure to omit NA's from df before running lm
+#       na.rm, na.omit, na.exclude
+# takeaways: 1) purely data-driven model, capable of of 2) being parallelized, 3) simultaneously predicting population and infrastructure
+# implications: that we want to better enable planners to utilize the data avaialble to them when predicting the future, not as dependent on hard-coded model
+
+# too early for policy, but can use to replace hard-coded models which take significant investment
+# paper due Wednesday at midnight
+
+
+clairesWinningIdea_ForEach_FasterHopefully <- function(masterRaster,fit)
+{
+  studyExtentRasterPath <- "/home/noah/Desktop/NRES 565 Data/sa_200m/w001001x.adf"
+  emptyRaster <- raster(studyExtentRasterPath)
+  res(emptyRaster) <- c(800,800)
+  ncells <- dim(masterRaster)[1] * dim(masterRaster)[2]
+  locs <- 1:ncells
+  
+  # Create a cluster using parallel:
+  myCluster <- makeCluster(spec=4,type="PSOCK")
+  # Register the backend with foreach:
+  registerDoParallel(myCluster)
+  coord <- coordinates(masterRaster)
+  x <- coord[,1]
+  y <- coord[,2]
+  
+  # question to determine: do these match up properly?
+  df <- as.data.frame(masterRaster)
+  df[["x"]] <- x
+  df[["y"]] <- y
+  
+  indCalc <- function(df,fit,i)
+  {
+    pred <- predict(fit,df[i,])
+    delta <- 0.05
+    predRandomized <- runif(1,pred-delta,pred+delta)
+    return(predRandomized)
+  }
+  
+  preds <- foreach(i = locs, .packages=c("rpart"), .combine="rbind") %dopar% { indCalc(df,fit,i) }
+  df[["pred"]] <- preds
+  spdf <- data.frame(x=df[["x"]],y=df[["y"]],pred=df[["pred"]])
+  coordinates(spdf)=~x+y
+  predictionRaster <- rasterize(spdf,emptyRaster,fun=mean)
+  predictionRaster <- predictionRaster[["pred"]]
+  
+  stopCluster(myCluster)
+  
+  return(predictionRaster)
+}
+
