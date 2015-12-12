@@ -626,13 +626,36 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   df <- as.data.frame(masterRaster,xy=TRUE)
   
   # growth
-  formula_growth <- paste(growthLayer,"~.",sep="")
+  # formula_growth <- paste(growthLayer,"~.",sep="")
+  growthVars <- c()
+  for (var in names(df))
+  {
+    if (is.na(pmatch("pop",var)))
+    {
+      growthVars <- c(growthVars,var)
+    }
+  }
+  # learned from http://stackoverflow.com/questions/5251507/how-to-succinctly-write-a-formula-with-many-variables-from-a-data-frame
+  formula_growth <- paste(growthLayer,"~",paste(growthVars,collapse="+"))
   fit_growth_tree <- rpart(formula_growth,df)
   # fit_growth_lm <- lm(formula_growth,df,na.action = na.exclude)
-  
+
   # electric
   # formula_elec <- paste(elecLayer,"~.",sep="")
-  formula_elec <- paste(elecLayer,"~",growthLayer,"+ URBAN_Urban + OWNRSHP_Owned + EMPSTAT_Employed_mean + EMPSTAT_Employed_min + EMPSTAT_Employed_max",sep="")
+  # formula_elec <- paste(elecLayer,"~",growthLayer,"+ URBAN_Urban + OWNRSHP_Owned + EMPSTAT_Employed_mean + EMPSTAT_Employed_min + EMPSTAT_Employed_max",sep="")
+  elecVars <- c()
+  for (var in names(df))
+  {
+    if (is.na(pmatch("ELEC",var)))
+    {
+      if (is.na(pmatch("BD11A_EL",var)))
+      {
+        elecVars <- c(elecVars,var)
+      }
+    }
+  }
+  # learned from http://stackoverflow.com/questions/5251507/how-to-succinctly-write-a-formula-with-many-variables-from-a-data-frame
+  formula_elec <- paste(elecLayer,"~",paste(elecVars,collapse="+"))
   fit_elec_tree <- rpart(formula_elec,df)
   # fit_elec_lm <- lm(formula_elec,df)
   
@@ -691,6 +714,7 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   runResults[["masterRaster"]] <- masterRaster
   runResults[["growthEstimates_Yearly_Brick_tree"]] <- growthEstimates_Yearly_Brick_tree
   runResults[["elecEstimates_Yearly_Brick_tree"]] <- elecEstimates_Yearly_Brick_tree
+  runResults[["populationEstimates_Yearly_tree"]] <- populationEstimates_Yearly_tree
 #   runResults[["growthEstimates_Yearly_Brick_lm"]] <- growthEstimates_Yearly_Brick_lm
 #   runResults[["elecEstimates_Yearly_Brick_lm"]] <- elecEstimates_Yearly_Brick_lm
   return(runResults)
