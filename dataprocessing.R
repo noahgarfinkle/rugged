@@ -492,6 +492,7 @@ doSimulation <- function(masterRaster,growthFit,elecFit,nYears,annualPercentGrow
     growthEstimate_Standardized <- growthEstimate / growthEstimateSum
     growthEstimate_Population = growthEstimate_Standardized * annualPercentGrowth + 1
     growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster[[growthLayer]]
+    growthEstimate_NewPopulation[[growthEstimate_NewPopulation < 0]] <- 0
     masterRaster[[growthLayer]] <- growthEstimate_NewPopulation
     
     # 2. Electricity Estimate
@@ -613,6 +614,7 @@ convertToReturnToMasterRaster <- function(toReturn)
 
 run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
 {
+  startYear <- 2011
   growthLayer <- "growth"
   elecLayer <- "ELECTRC_Yes"  
   populationLayer <- "population"
@@ -621,6 +623,7 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   growthEstimates_Yearly_lm <- c()
   elecEstimates_Yearly_lm <- c()
   populationEstimates_Yearly_tree <- c()
+  years <- c()
   
   # build the fits
   df <- as.data.frame(masterRaster,xy=TRUE)
@@ -665,22 +668,53 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   
   for (year in 1:nYears)
   {
-    statusLine <- paste("Year: ",year,sep="")
+    currentYear <- toString(startYear + year)
+    years <- c(years,currentYear)
+    statusLine <- paste("Year: ",currentYear,sep="")
     print(statusLine)
     # A. Tree Version
     # 1. Growth Estimate
     growthEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_tree,fit_growth_tree)
     growthEstimateSum <- cellStats(growthEstimate,sum)
     growthEstimate_Standardized <- growthEstimate / growthEstimateSum
-    growthEstimate_Population = growthEstimate_Standardized * annualPercentGrowth + 1
-    growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster_tree[[populationLayer]]
-    masterRaster_tree[[populationLayer]] <- growthEstimate_NewPopulation
+    totalNumberOfPeeps <- cellStats(masterRaster_tree[[populationLayer]],sum) * annualPercentGrowth
+    growthEstimate_Population <- growthEstimate_Standardized * totalNumberOfPeeps
+    growthEstimate_NewPopulation <- growthEstimate_Population + masterRaster_tree[[populationLayer]]
+    #growthEstimate_Population = growthEstimate_Standardized * (annualPercentGrowth + 1) #TODO, see if this would have worked if you (#noahgarfinkle) weren't a fucking dumbass who doesn't know PEMDAS
+    # growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster_tree[[populationLayer]]
+    # masterRaster_tree[[populationLayer]] <- growthEstimate_NewPopulation
+    # TODO: Update all of the focal values for population
+    toChange <- c(populationLayer)
+    toChange_Raster <- brick(c(growthEstimate_NewPopulation))
+    names(toChange_Raster) <- toChange
+    # Run createFocalRasters(raster) on each
+    replacementRaster <- createFocalRasters(toChange_Raster)
+    # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
+    for (layerName in names(replacementRaster))
+    {
+      masterRaster_tree[[layerName]] <- replacementRaster[[layerName]]
+    }
+    
     populationEstimate_Yearly_tree <- cellStats(masterRaster_tree[[populationLayer]],sum)
     populationEstimates_Yearly_tree <- c(populationEstimates_Yearly_tree,populationEstimate_Yearly_tree)
     
     # 2. Electricity Estimate
     elecEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_tree,fit_elec_tree)
-    masterRaster_tree[[elecLayer]] <- elecEstimate
+    # TODO: Update all of the focal values for electric yes and electric no
+    # update yes and no (no calculated)
+    elecEstimate_No <- 1 - elecEstimate
+    # list out the rasters we need to change (yes and no)
+    toChange <- c("ELECTRC_Yes","ELECTRC_No")
+    toChange_Raster <- brick(c(elecEstimate,elecEstimate_No))
+    names(toChange_Raster) <- toChange
+    # Run createFocalRasters(raster) on each
+    replacementRaster <- createFocalRasters(toChange_Raster)
+    # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
+    for (layerName in names(replacementRaster))
+    {
+      masterRaster_tree[[layerName]] <- replacementRaster[[layerName]]
+    }
+    #masterRaster_tree[[elecLayer]] <- elecEstimate
     
     # 3. Save each year's results so we can make a slide show
     growthEstimates_Yearly_tree <- c(growthEstimates_Yearly_tree,growthEstimate_NewPopulation)
@@ -705,7 +739,9 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
 #     elecEstimates_Yearly_lm <- c(elecEstimates_Yearly_lm,elecEstimate)
   }
   growthEstimates_Yearly_Brick_tree <- brick(growthEstimates_Yearly_tree)
+  names(growthEstimates_Yearly_Brick_tree) <- years
   elecEstimates_Yearly_Brick_tree <- brick(elecEstimates_Yearly_tree)
+  names(elecEstimates_Yearly_Brick_tree) <- years
 #   growthEstimates_Yearly_Brick_lm <- brick(growthEstimates_Yearly_lm)
 #   elecEstimates_Yearly_Brick_lm <- brick(elecEstimates_Yearly_lm)
   runResults <- list()
@@ -760,16 +796,27 @@ clairesWinningIdea_ForEach_FasterHopefully <- function(masterRaster,fit)
   indCalc <- function(df,fit,i)
   {
     pred <- predict(fit,df[i,])
-    delta <- 0.05
-    predRandomized <- runif(1,pred-delta,pred+delta)
-    return(predRandomized)
+#     delta <- cellStats(p)
+#     # predRandomized <- runif(1,pred-delta,pred+delta)
+#     predRandomized <- pred
+    return(pred)
   }
   
   preds <- foreach(i = locs, .packages=c("rpart"), .combine="rbind") %dopar% { indCalc(df,fit,i) }
+  delta <- sd(preds)
+  randomPreds <- c(rep(0,length(preds)))
+  place <- 1
+  for (pred in preds)
+  {
+    predRandomized <- runif(1,pred-delta,pred+delta)
+    randomPreds[place] <- predRandomized
+    place <- place + 1
+  }
   df[["pred"]] <- preds
   spdf <- data.frame(x=df[["x"]],y=df[["y"]],pred=df[["pred"]])
   coordinates(spdf)=~x+y
   predictionRaster <- rasterize(spdf,emptyRaster,fun=mean)
+  names(predictionRaster) <- c("ID","pred")
   predictionRaster <- predictionRaster[["pred"]]
   
   stopCluster(myCluster)
