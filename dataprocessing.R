@@ -615,6 +615,7 @@ convertToReturnToMasterRaster <- function(toReturn)
 
 run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
 {
+  t1 <- Sys.time()
   startYear <- 2011
   growthLayer <- "growth"
   elecLayer <- "ELECTRC_Yes"  
@@ -625,6 +626,8 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   elecEstimates_Yearly_lm <- c()
   populationEstimates_Yearly_tree <- c()
   years <- c()
+  
+  print("Pre-processing the masterRaster")
   
   # remove the rasters which are all na or all inf
   allGood <- checkIfAllNA(masterRaster)
@@ -639,9 +642,15 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   # build the fits
   df <- as.data.frame(masterRaster,xy=TRUE)
   
+  dt <-  difftime(Sys.time(),t1,units="min")
+  print(paste("Finished pre-processing the masterRaster in ",dt,sep=""))
+  t1 <- Sys.time()
+  
   # create seperate copies of the master raster for the analyses
   masterRaster_tree <- masterRaster
   masterRaster_lm <- masterRaster
+  
+  print("Generating the regression trees")
   
   # growth
   # formula_growth <- paste(growthLayer,"~.",sep="")
@@ -655,7 +664,7 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   }
   # learned from http://stackoverflow.com/questions/5251507/how-to-succinctly-write-a-formula-with-many-variables-from-a-data-frame
   formula_growth <- paste(growthLayer,"~",paste(growthVars,collapse="+"))
-  fit_growth_tree <- rpart(formula_growth,df)
+  fit_growth_tree <- rpart(formula_growth,df,minsplit=10)
   
   # electric
   # formula_elec <- paste(elecLayer,"~.",sep="")
@@ -675,7 +684,13 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   formula_elec <- paste(elecLayer,"~",paste(elecVars,collapse="+"))
   fit_elec_tree <- rpart(formula_elec,df)
   
+  dt <-  difftime(Sys.time(),t1,units="min")
+  print(paste("Finished generating regression trees in ",dt,sep=""))
+  t1 <- Sys.time()
+  
   # lm
+  print("Generating the lm models")
+  
   notHaveNA <- checkForNA(masterRaster)
 
   # 1. growth model
@@ -711,13 +726,20 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   formula_elec_lm <- paste(elecLayer,"~",paste(notHaveNA_filtered,collapse="+"))
   fit_elec_lm <- lm(formula_elec_lm,as.data.frame(masterRaster_lm[[notHaveNA]]))
   
+  dt <-  difftime(Sys.time(),t1,units="min")
+  print(paste("Finished generating lm models in ",dt,sep=""))
+  tstartsim <- Sys.time()
+  
+  print("Beginning the simulations")
   for (year in 1:nYears)
   {
+    t1 <- Sys.time()
     currentYear <- toString(startYear + year)
     currentYear <- paste("Year: ",currentYear,sep="")
     years <- c(years,currentYear)
     print(currentYear)
     # A. Tree Version
+    print("Growth: Tree")
     # 1. Growth Estimate
     growthEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_tree,fit_growth_tree)
     growthEstimateSum <- cellStats(growthEstimate,sum)
@@ -743,6 +765,11 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
     populationEstimate_Yearly_tree <- cellStats(masterRaster_tree[[populationLayer]],sum)
     populationEstimates_Yearly_tree <- c(populationEstimates_Yearly_tree,populationEstimate_Yearly_tree)
     
+    dt <-  difftime(Sys.time(),t1,units="min")
+    print(paste("Finished modeling growth using tree in ",dt,sep=""))
+    t1 <- Sys.time()
+    
+    print("Elec: Tree")
     # 2. Electricity Estimate
     elecEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_tree,fit_elec_tree)
     # TODO: Update all of the focal values for electric yes and electric no
@@ -766,62 +793,80 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
     # TODO: calculate percent growth
     elecEstimates_Yearly_tree <- c(elecEstimates_Yearly_tree,elecEstimate)
     
-#     # B. LM version
- # 1. Growth Estimate
-    growthEstimate <- clairesWinningIdea(masterRaster_lm,fit_growth_lm)
-    growthEstimateSum <- cellStats(growthEstimate,sum)
-    growthEstimate_Standardized <- growthEstimate / growthEstimateSum
-    totalNumberOfPeeps <- cellStats(masterRaster_lm[[populationLayer]],sum) * annualPercentGrowth
-    growthEstimate_Population <- growthEstimate_Standardized * totalNumberOfPeeps
-    growthEstimate_NewPopulation <- growthEstimate_Population + masterRaster_lm[[populationLayer]]
-    toChange <- c(populationLayer)
-    toChange_Raster <- brick(c(growthEstimate_NewPopulation))
-    names(toChange_Raster) <- toChange
-    # Run createFocalRasters(raster) on each
-    replacementRaster <- createFocalRasters(toChange_Raster)
-    # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
-    for (layerName in names(replacementRaster))
-    {
-      masterRaster_lm[[layerName]] <- replacementRaster[[layerName]]
-    }
-    
-    
-    # 2. Electricity Estimate
-    elecEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_lm,fit_elec_lm)
-    # TODO: Update all of the focal values for electric yes and electric no
-    # update yes and no (no calculated)
-    elecEstimate_No <- 1 - elecEstimate
-    # list out the rasters we need to change (yes and no)
-    toChange <- c("ELECTRC_Yes","ELECTRC_No")
-    toChange_Raster <- brick(c(elecEstimate,elecEstimate_No))
-    names(toChange_Raster) <- toChange
-    # Run createFocalRasters(raster) on each
-    replacementRaster <- createFocalRasters(toChange_Raster)
-    # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
-    for (layerName in names(replacementRaster))
-    {
-      masterRaster_lm[[layerName]] <- replacementRaster[[layerName]]
-    }
-
-    # 3. Save each year's results so we can make a slide show
-    growthEstimates_Yearly_lm <- c(growthEstimates_Yearly_lm,growthEstimate_NewPopulation)
-    elecEstimates_Yearly_lm <- c(elecEstimates_Yearly_lm,elecEstimate)
+    dt <-  difftime(Sys.time(),t1,units="min")
+    print(paste("Finished modeling elec using tree in ",dt,sep=""))
+#     t1 <- Sys.time()
+#     
+# #     # B. LM version
+#     print("Growth: LM")
+#  # 1. Growth Estimate
+#     growthEstimate <- clairesWinningIdea(masterRaster_lm,fit_growth_lm)
+#     growthEstimateSum <- cellStats(growthEstimate,sum)
+#     growthEstimate_Standardized <- growthEstimate / growthEstimateSum
+#     totalNumberOfPeeps <- cellStats(masterRaster_lm[[populationLayer]],sum) * annualPercentGrowth
+#     growthEstimate_Population <- growthEstimate_Standardized * totalNumberOfPeeps
+#     growthEstimate_NewPopulation <- growthEstimate_Population + masterRaster_lm[[populationLayer]]
+#     toChange <- c(populationLayer)
+#     toChange_Raster <- brick(c(growthEstimate_NewPopulation))
+#     names(toChange_Raster) <- toChange
+#     # Run createFocalRasters(raster) on each
+#     replacementRaster <- createFocalRasters(toChange_Raster)
+#     # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
+#     for (layerName in names(replacementRaster))
+#     {
+#       masterRaster_lm[[layerName]] <- replacementRaster[[layerName]]
+#     }
+#     
+#     dt <-  difftime(Sys.time(),t1,units="min")
+#     print(paste("Finished modeling growth using lm in ",dt,sep=""))
+#     t1 <- Sys.time()
+#     
+#     print("Elec: LM")
+#     # 2. Electricity Estimate
+#     elecEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_lm,fit_elec_lm)
+#     # TODO: Update all of the focal values for electric yes and electric no
+#     # update yes and no (no calculated)
+#     elecEstimate_No <- 1 - elecEstimate
+#     # list out the rasters we need to change (yes and no)
+#     toChange <- c("ELECTRC_Yes","ELECTRC_No")
+#     toChange_Raster <- brick(c(elecEstimate,elecEstimate_No))
+#     names(toChange_Raster) <- toChange
+#     # Run createFocalRasters(raster) on each
+#     replacementRaster <- createFocalRasters(toChange_Raster)
+#     # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
+#     for (layerName in names(replacementRaster))
+#     {
+#       masterRaster_lm[[layerName]] <- replacementRaster[[layerName]]
+#     }
+#     
+#     dt <-  difftime(Sys.time(),t1,units="min")
+#     print(paste("Finished modeling elec using lm in ",dt,sep=""))
+#     t1 <- Sys.time()
+#     
+#     # 3. Save each year's results so we can make a slide show
+#     growthEstimates_Yearly_lm <- c(growthEstimates_Yearly_lm,growthEstimate_NewPopulation)
+#     elecEstimates_Yearly_lm <- c(elecEstimates_Yearly_lm,elecEstimate)
   }
+  dt <-  difftime(Sys.time(),tstartsim,units="min")
+  print(paste("Simulations complete in ",dt,sep=""))
+  t1 <- Sys.time()
   growthEstimates_Yearly_Brick_tree <- brick(growthEstimates_Yearly_tree)
   names(growthEstimates_Yearly_Brick_tree) <- years
   elecEstimates_Yearly_Brick_tree <- brick(elecEstimates_Yearly_tree)
   names(elecEstimates_Yearly_Brick_tree) <- years
-#   growthEstimates_Yearly_Brick_lm <- brick(growthEstimates_Yearly_lm)
-#   elecEstimates_Yearly_Brick_lm <- brick(elecEstimates_Yearly_lm)
+  # growthEstimates_Yearly_Brick_lm <- brick(growthEstimates_Yearly_lm)
+  # elecEstimates_Yearly_Brick_lm <- brick(elecEstimates_Yearly_lm)
   runResults <- list()
   runResults[["fit_growth_tree"]] <- fit_growth_tree
   runResults[["fit_elec_tree"]] <- fit_elec_tree
+  runResults[["fit_growth_lm"]] <- fit_growth_lm
+  runResults[["fit_elec_lm"]] <- fit_elec_lm
   runResults[["masterRaster"]] <- masterRaster
   runResults[["growthEstimates_Yearly_Brick_tree"]] <- growthEstimates_Yearly_Brick_tree
   runResults[["elecEstimates_Yearly_Brick_tree"]] <- elecEstimates_Yearly_Brick_tree
   runResults[["populationEstimates_Yearly_tree"]] <- populationEstimates_Yearly_tree
-#   runResults[["growthEstimates_Yearly_Brick_lm"]] <- growthEstimates_Yearly_Brick_lm
-#   runResults[["elecEstimates_Yearly_Brick_lm"]] <- elecEstimates_Yearly_Brick_lm
+  # runResults[["growthEstimates_Yearly_Brick_lm"]] <- growthEstimates_Yearly_Brick_lm
+  # runResults[["elecEstimates_Yearly_Brick_lm"]] <- elecEstimates_Yearly_Brick_lm
   return(runResults)
 }
 
@@ -956,18 +1001,48 @@ replaceNACellsWithAverage <- function(masterRaster)
 }
 
 removeCategoricalLayers <- function(masterRaster)
-{
-  newRasters <- c()
-  newNames <- c()
+{ 
+  layersToExclude <- c()
+  for (layer in names(categoricalList))
+  {
+    meanName <- paste(layer,"_mean",sep="")
+    minName <- paste(layer,"_min",sep="")
+    maxName <- paste(layer,"_max",sep="")
+    layersToExclude <- c(layersToExclude,layer,meanName,minName,maxName)
+  }
+  
+  layersToKeep <- c()
   for (layer in names(masterRaster))
   {
-    if (is.null(categoricalList[[layer]]))
+    if (!any(grepl(layer,layersToExclude)))
     {
-      newRasters <- c(newRasters,masterRaster[[layer]])
-      newNames <- c(newNames,layer)
+      layersToKeep <- c(layersToKeep,layer)
     }
   }
-  masterRaster <- brick(newRasters)
-  names(masterRaster) <- newNames
+  
+#   newNames <- c()
+#   for (layer in names(masterRaster))
+#   {
+#     if (is.null(categoricalList[[layer]])) # check if the layer is a categorical variable
+#     {
+#       newRasters <- c(newRasters,masterRaster[[layer]])
+#       newNames <- c(newNames,layer)
+#     }
+#   }
+#   focalsToExclude <- c()
+#   for (layer in names(categoricalList))
+#   {
+#     meanName <- paste(layer,"_mean",sep="")
+#     minName <- paste(layer,"_min",sep="")
+#     maxName <- paste(layer,"_max",sep="")
+#     focalsToExclude <- c(focalsToExclude,meanName,minName,maxName)
+#   }
+#   finalNames <- c()
+#   for (layer in newNames)
+#   {
+#     
+#   }
+
+  masterRaster <- masterRaster[[layersToKeep]]
   return(masterRaster)
 }
