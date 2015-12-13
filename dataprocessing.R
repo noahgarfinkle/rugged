@@ -7,6 +7,7 @@ library(rpart.utils)
 library(randomForest)
 library("doParallel")
 require("spatial.tools")
+require(stats)
 
 
 
@@ -625,8 +626,22 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   populationEstimates_Yearly_tree <- c()
   years <- c()
   
+  # remove the rasters which are all na or all inf
+  allGood <- checkIfAllNA(masterRaster)
+  masterRaster <- masterRaster[[allGood]]
+  
+  # remove any layers from masterRaster which are categorical variables, since they don't mean much in a regression and have been replaced
+  masterRaster <- removeCategoricalLayers(masterRaster)
+  
+  # replace any cells with na or inf in the remaining raster with the average for the raster as a whole
+  masterRaster <- replaceNACellsWithAverage(masterRaster)
+  
   # build the fits
   df <- as.data.frame(masterRaster,xy=TRUE)
+  
+  # create seperate copies of the master raster for the analyses
+  masterRaster_tree <- masterRaster
+  masterRaster_lm <- masterRaster
   
   # growth
   # formula_growth <- paste(growthLayer,"~.",sep="")
@@ -641,8 +656,7 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   # learned from http://stackoverflow.com/questions/5251507/how-to-succinctly-write-a-formula-with-many-variables-from-a-data-frame
   formula_growth <- paste(growthLayer,"~",paste(growthVars,collapse="+"))
   fit_growth_tree <- rpart(formula_growth,df)
-  # fit_growth_lm <- lm(formula_growth,df,na.action = na.exclude)
-
+  
   # electric
   # formula_elec <- paste(elecLayer,"~.",sep="")
   # formula_elec <- paste(elecLayer,"~",growthLayer,"+ URBAN_Urban + OWNRSHP_Owned + EMPSTAT_Employed_mean + EMPSTAT_Employed_min + EMPSTAT_Employed_max",sep="")
@@ -660,18 +674,49 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
   # learned from http://stackoverflow.com/questions/5251507/how-to-succinctly-write-a-formula-with-many-variables-from-a-data-frame
   formula_elec <- paste(elecLayer,"~",paste(elecVars,collapse="+"))
   fit_elec_tree <- rpart(formula_elec,df)
-  # fit_elec_lm <- lm(formula_elec,df)
   
-  # create seperate copies of the master raster for the analyses
-  masterRaster_tree <- masterRaster
-  masterRaster_lm <- masterRaster
+  # lm
+  notHaveNA <- checkForNA(masterRaster)
+
+  # 1. growth model
+  notHaveNA_filtered <- c()
+  for (col in notHaveNA)
+  {
+    if (col != growthLayer)
+    {
+      if (is.na(pmatch("pop",col)))
+      {
+        notHaveNA_filtered <- c(notHaveNA_filtered,col)
+      }
+    }
+  }
+  formula_growth_lm <- paste(growthLayer,"~",paste(notHaveNA_filtered,collapse="+"))
+  fit_growth_lm <- lm(formula_growth_lm,as.data.frame(masterRaster_lm[[notHaveNA]]))
+  
+  # 2. elec model
+  notHaveNA_filtered <- c()
+  for (col in notHaveNA)
+  {
+    if (col != growthLayer)
+    {
+      if (is.na(pmatch("ELEC",col)))
+      {
+        if (is.na(pmatch("BD11A_EL",col)))
+        {
+          notHaveNA_filtered <- c(notHaveNA_filtered,col)
+        }
+      }
+    }
+  }
+  formula_elec_lm <- paste(elecLayer,"~",paste(notHaveNA_filtered,collapse="+"))
+  fit_elec_lm <- lm(formula_elec_lm,as.data.frame(masterRaster_lm[[notHaveNA]]))
   
   for (year in 1:nYears)
   {
     currentYear <- toString(startYear + year)
+    currentYear <- paste("Year: ",currentYear,sep="")
     years <- c(years,currentYear)
-    statusLine <- paste("Year: ",currentYear,sep="")
-    print(statusLine)
+    print(currentYear)
     # A. Tree Version
     # 1. Growth Estimate
     growthEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_tree,fit_growth_tree)
@@ -722,21 +767,45 @@ run <- function(masterRaster,nYears,annualPercentGrowth=0.012)
     elecEstimates_Yearly_tree <- c(elecEstimates_Yearly_tree,elecEstimate)
     
 #     # B. LM version
-#     # 1. Growth Estimate
-#     growthEstimate <- clairesWinningIdea(masterRaster_lm,fit_growth_lm)
-#     growthEstimateSum <- cellStats(growthEstimate,sum)
-#     growthEstimate_Standardized <- growthEstimate / growthEstimateSum
-#     growthEstimate_Population = growthEstimate_Standardized * annualPercentGrowth + 1
-#     growthEstimate_NewPopulation <- growthEstimate_Population * masterRaster_lm[[growthLayer]]
-#     masterRaster_lm[[growthLayer]] <- growthEstimate_NewPopulation
-#     
-#     # 2. Electricity Estimate
-#     elecEstimate <- clairesWinningIdea(masterRaster_lm,fit_elec_lm)
-#     masterRaster_lm[[elecLayer]] <- elecEstimate
-#     
-#     # 3. Save each year's results so we can make a slide show
-#     growthEstimates_Yearly_lm <- c(growthEstimates_Yearly_lm,growthEstimate_NewPopulation)
-#     elecEstimates_Yearly_lm <- c(elecEstimates_Yearly_lm,elecEstimate)
+ # 1. Growth Estimate
+    growthEstimate <- clairesWinningIdea(masterRaster_lm,fit_growth_lm)
+    growthEstimateSum <- cellStats(growthEstimate,sum)
+    growthEstimate_Standardized <- growthEstimate / growthEstimateSum
+    totalNumberOfPeeps <- cellStats(masterRaster_lm[[populationLayer]],sum) * annualPercentGrowth
+    growthEstimate_Population <- growthEstimate_Standardized * totalNumberOfPeeps
+    growthEstimate_NewPopulation <- growthEstimate_Population + masterRaster_lm[[populationLayer]]
+    toChange <- c(populationLayer)
+    toChange_Raster <- brick(c(growthEstimate_NewPopulation))
+    names(toChange_Raster) <- toChange
+    # Run createFocalRasters(raster) on each
+    replacementRaster <- createFocalRasters(toChange_Raster)
+    # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
+    for (layerName in names(replacementRaster))
+    {
+      masterRaster_lm[[layerName]] <- replacementRaster[[layerName]]
+    }
+    
+    
+    # 2. Electricity Estimate
+    elecEstimate <- clairesWinningIdea_ForEach_FasterHopefully(masterRaster_lm,fit_elec_lm)
+    # TODO: Update all of the focal values for electric yes and electric no
+    # update yes and no (no calculated)
+    elecEstimate_No <- 1 - elecEstimate
+    # list out the rasters we need to change (yes and no)
+    toChange <- c("ELECTRC_Yes","ELECTRC_No")
+    toChange_Raster <- brick(c(elecEstimate,elecEstimate_No))
+    names(toChange_Raster) <- toChange
+    # Run createFocalRasters(raster) on each
+    replacementRaster <- createFocalRasters(toChange_Raster)
+    # foreach layer in the brick, replace the layer with the same name in masterRaster_tree
+    for (layerName in names(replacementRaster))
+    {
+      masterRaster_lm[[layerName]] <- replacementRaster[[layerName]]
+    }
+
+    # 3. Save each year's results so we can make a slide show
+    growthEstimates_Yearly_lm <- c(growthEstimates_Yearly_lm,growthEstimate_NewPopulation)
+    elecEstimates_Yearly_lm <- c(elecEstimates_Yearly_lm,elecEstimate)
   }
   growthEstimates_Yearly_Brick_tree <- brick(growthEstimates_Yearly_tree)
   names(growthEstimates_Yearly_Brick_tree) <- years
@@ -802,7 +871,7 @@ clairesWinningIdea_ForEach_FasterHopefully <- function(masterRaster,fit)
     return(pred)
   }
   
-  preds <- foreach(i = locs, .packages=c("rpart"), .combine="rbind") %dopar% { indCalc(df,fit,i) }
+  preds <- foreach(i = locs, .packages=c("rpart","stats"), .combine="rbind") %dopar% { indCalc(df,fit,i) }
   delta <- sd(preds)
   randomPreds <- c(rep(0,length(preds)))
   place <- 1
@@ -824,3 +893,81 @@ clairesWinningIdea_ForEach_FasterHopefully <- function(masterRaster,fit)
   return(predictionRaster)
 }
 
+processResults <- function(runResults,index1,index2)
+{
+  r1 <- runResults$growthEstimates_Yearly_Brick_tree[[index1]]
+  r2 <- runResults$growthEstimates_Yearly_Brick_tree[[index2]]
+  r3 <- r2 - r1
+  return(r3)
+}
+
+checkForNA <- function(masterRaster)
+{
+  df <- as.data.frame(masterRaster)
+  colNames <- names(df)
+  notHaveNA <- c()
+  for (colName in colNames)
+  {
+    if (!any(is.na(df[[colName]])))
+    {
+      if(!any(is.infinite(df[[colName]])))
+      {
+        notHaveNA <- c(notHaveNA,colName)
+      }
+    }
+  }
+  return(notHaveNA)
+}
+
+checkIfAllNA <- function(masterRaster)
+{
+  df <- as.data.frame(masterRaster)
+  allNA <- c()
+  allGood <- c()
+  for (layer in names(masterRaster))
+  {
+    if (all(is.na(df[[layer]])))
+    {
+      allNA <- c(allNA,layer)
+    }
+    else if (all(is.infinite(df[[layer]])))
+    {
+      allNA <- c(allNA,layer)
+    }
+    else
+    {
+      allGood <- c(allGood,layer)
+    }
+  }
+  return(allGood)
+}
+
+replaceNACellsWithAverage <- function(masterRaster)
+{
+  for (layer in names(masterRaster))
+  {
+    rast <- masterRaster[[layer]]
+    layerAverage <- cellStats(rast,mean)
+    rast[is.na(rast)] <- layerAverage
+    rast[is.infinite(rast)] <- layerAverage
+    masterRaster[[layer]] <- rast
+  }
+  return(masterRaster)
+}
+
+removeCategoricalLayers <- function(masterRaster)
+{
+  newRasters <- c()
+  newNames <- c()
+  for (layer in names(masterRaster))
+  {
+    if (is.null(categoricalList[[layer]]))
+    {
+      newRasters <- c(newRasters,masterRaster[[layer]])
+      newNames <- c(newNames,layer)
+    }
+  }
+  masterRaster <- brick(newRasters)
+  names(masterRaster) <- newNames
+  return(masterRaster)
+}
